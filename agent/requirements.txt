@@ -1,9 +1,9 @@
 supabase>=2.0.0
 pynput
 pyautogui
-aiortc
 opencv-python
 python-dotenv
 mss
 requests
 websockets
+pyinstaller

