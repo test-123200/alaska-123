@@ -3,6 +3,7 @@ import cv2
 import time
 import os
 import secrets
+import tempfile
 from supabase import Client
 
 class VideoRecorderService:
@@ -47,14 +48,16 @@ class VideoRecorderService:
             return 
         
         self.is_recording = True
-        
-        # Fetch updated duration
         duration = await self.get_duration()
-        print(f"Starting video clip recording ({duration}s) for command {cmd['id']}...")
+        print(f"Starting video clip recording ({duration}s)...")
         
         self.supabase.table("commands").update({"status": "PROCESSING"}).eq("id", cmd["id"]).execute()
 
+        # System Temp Directory
+        temp_dir = tempfile.gettempdir()
         filename = f"clip_{int(time.time())}_{secrets.token_hex(4)}.avi"
+        output_path = os.path.join(temp_dir, filename)
+
         codec = cv2.VideoWriter_fourcc(*'XVID')
         fps = 20.0
         
@@ -69,7 +72,7 @@ class VideoRecorderService:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        out = cv2.VideoWriter(filename, codec, fps, (width, height))
+        out = cv2.VideoWriter(output_path, codec, fps, (width, height))
         
         start_time = time.time()
         try:
@@ -85,10 +88,10 @@ class VideoRecorderService:
             out.release()
             cv2.destroyAllWindows()
 
-        print(f"Recording complete: {filename}. Uploading...")
+        print(f"Recording complete. Uploading from {output_path}...")
 
         try:
-            with open(filename, 'rb') as f:
+            with open(output_path, 'rb') as f:
                 storage_path = f"{self.employee_id}/{filename}"
                 self.supabase.storage.from_("videos").upload(
                     file=f,
@@ -103,13 +106,16 @@ class VideoRecorderService:
             }).execute()
 
             self.supabase.table("commands").update({"status": "EXECUTED"}).eq("id", cmd["id"]).execute()
-            print("Video uploaded and command executed.")
+            print("Video uploaded.")
 
         except Exception as e:
             print(f"Error uploading video: {e}")
             self.supabase.table("commands").update({"status": "ERROR", "payload": {"error": str(e)}}).eq("id", cmd["id"]).execute()
         
         finally:
-            if os.path.exists(filename):
-                os.remove(filename)
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except:
+                    pass
             self.is_recording = False
