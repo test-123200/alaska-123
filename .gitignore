@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+build/
+.store/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Environment Variables (CRITICAL)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Supabase
+supabase/
