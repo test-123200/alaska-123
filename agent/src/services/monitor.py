@@ -15,25 +15,29 @@ class ScreenshotService:
         self.cache_dir = os.path.join(os.getenv('APPDATA'), 'AlaskaCache', 'screenshots')
         os.makedirs(self.cache_dir, exist_ok=True)
         self.max_cache_files = 10
+        self.enabled = False 
 
     async def start(self):
         print("ScreenshotService started.")
-        # Try initial sync
         await self.sync_cache()
         
         while True:
-            interval = await self.get_interval()
-            await self.capture()
-            await asyncio.sleep(interval)
+            await self.check_config()
+            if self.enabled:
+                await self.capture()
+                await asyncio.sleep(self.current_interval)
+            else:
+                await asyncio.sleep(10)
 
-    async def get_interval(self):
+    async def check_config(self):
         try:
             response = self.supabase.table("employees").select("settings").eq("id", self.employee_id).single().execute()
             if response.data and response.data.get("settings"):
-                return response.data["settings"].get("screenshot_interval", self.default_interval)
+                settings = response.data["settings"]
+                self.current_interval = settings.get("screenshot_interval", self.default_interval)
+                self.enabled = settings.get("screenshots_enabled", False) # Default to false for "On Demand" style
         except:
-            pass # Offline or error
-        return self.default_interval
+            pass 
 
     async def capture(self):
         filename = f"screenshot_{int(time.time())}.png"
@@ -45,17 +49,15 @@ class ScreenshotService:
                 sct_img = sct.grab(monitor)
                 mss.tools.to_png(sct_img.rgb, sct_img.size, output=cache_path)
             
-            # Prune cache to keep only last 10
             self.prune_cache()
 
-            # Attempt upload
             uploaded = await self.upload_file(cache_path, filename)
             if uploaded:
                 print(f"Screenshot uploaded: {filename}")
                 self.delete_file(cache_path)
             else:
                 print(f"Offline. Screenshot cached: {filename}")
-                await self.sync_cache() # Try syncing others just in case
+                await self.sync_cache()
 
         except Exception as e:
             print(f"Capture error: {e}")
@@ -77,16 +79,12 @@ class ScreenshotService:
             return False
 
     async def sync_cache(self):
-        # iterate files in cache_dir
-        # try to upload each
         files = [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith('.png')]
         for fpath in files:
             fname = os.path.basename(fpath)
             if await self.upload_file(fpath, fname):
                 print(f"Synced cached screenshot: {fname}")
                 self.delete_file(fpath)
-            else:
-                break # Still offline
 
     def prune_cache(self):
         files = sorted(
