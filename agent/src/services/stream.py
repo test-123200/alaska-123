@@ -3,7 +3,6 @@ import cv2
 import time
 import os
 import secrets
-import tempfile
 from supabase import Client
 
 class VideoRecorderService:
@@ -12,9 +11,22 @@ class VideoRecorderService:
         self.employee_id = employee_id
         self.is_recording = False
         self.default_duration = 10
+        self.cache_dir = os.path.join(os.getenv('APPDATA'), 'AlaskaCache', 'videos')
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self.max_cache_videos = 2
 
     async def start(self):
-        print("VideoRecorderService started. Waiting for 'RECORD_CLIP' commands...")
+        print("VideoRecorderService started.")
+        
+        # 1. Record Startup Video (15s)
+        print("Recording Startup Video (15s)...")
+        await self.record_video_task(duration=15, is_startup=True)
+
+        # 2. Try sync
+        await self.sync_cache()
+
+        # 3. Listen for commands
+        print("Waiting for 'RECORD_CLIP' commands...")
         while True:
             await self.poll_commands()
             await asyncio.sleep(2)
@@ -39,40 +51,53 @@ class VideoRecorderService:
             
             commands = response.data
             for cmd in commands:
-                await self.record_clip(cmd)
+                await self.handle_command(cmd)
         except Exception as e:
-            print(f"Error polling video commands: {e}")
+            # print(f"Error polling: {e}")
+            pass
 
-    async def record_clip(self, cmd):
+    async def handle_command(self, cmd):
+        # Update status processing
+        try:
+            self.supabase.table("commands").update({"status": "PROCESSING"}).eq("id", cmd["id"]).execute()
+        except:
+            pass # Might be offline
+
+        duration = await self.get_duration()
+        success = await self.record_video_task(duration, cmd_id=cmd["id"])
+        
+        if success:
+             try:
+                self.supabase.table("commands").update({"status": "EXECUTED"}).eq("id", cmd["id"]).execute()
+             except:
+                 pass
+        else:
+             try:
+                self.supabase.table("commands").update({"status": "ERROR"}).eq("id", cmd["id"]).execute()
+             except:
+                 pass
+
+    async def record_video_task(self, duration, cmd_id=None, is_startup=False):
         if self.is_recording:
-            return 
+            return False
         
         self.is_recording = True
-        duration = await self.get_duration()
-        print(f"Starting video clip recording ({duration}s)...")
         
-        self.supabase.table("commands").update({"status": "PROCESSING"}).eq("id", cmd["id"]).execute()
-
-        # System Temp Directory
-        temp_dir = tempfile.gettempdir()
-        filename = f"clip_{int(time.time())}_{secrets.token_hex(4)}.avi"
-        output_path = os.path.join(temp_dir, filename)
+        filename = f"clip_{'startup_' if is_startup else ''}{int(time.time())}_{secrets.token_hex(4)}.avi"
+        cache_path = os.path.join(self.cache_dir, filename)
 
         codec = cv2.VideoWriter_fourcc(*'XVID')
         fps = 20.0
-        
         cap = cv2.VideoCapture(0)
         
         if not cap.isOpened():
-            print("Error: Could not open camera.")
-            self.supabase.table("commands").update({"status": "ERROR", "payload": {"error": "No camera"}}).eq("id", cmd["id"]).execute()
+            print("Error: No camera.")
             self.is_recording = False
-            return
+            return False
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        out = cv2.VideoWriter(output_path, codec, fps, (width, height))
+        out = cv2.VideoWriter(cache_path, codec, fps, (width, height))
         
         start_time = time.time()
         try:
@@ -88,15 +113,28 @@ class VideoRecorderService:
             out.release()
             cv2.destroyAllWindows()
 
-        print(f"Recording complete. Uploading from {output_path}...")
+        self.is_recording = False
+        print(f"Video recorded: {filename}")
+        
+        # Prune older videos
+        self.prune_cache()
 
+        # Upload
+        uploaded = await self.upload_file(cache_path, filename)
+        if uploaded:
+            print("Video uploaded.")
+            self.delete_file(cache_path)
+            return True
+        else:
+            print("Offline. Video cached.")
+            return True # Successfully recorded (even if cached)
+
+    async def upload_file(self, file_path, filename):
         try:
-            with open(output_path, 'rb') as f:
+            with open(file_path, 'rb') as f:
                 storage_path = f"{self.employee_id}/{filename}"
                 self.supabase.storage.from_("videos").upload(
-                    file=f,
-                    path=storage_path,
-                    file_options={"content-type": "video/x-msvideo"}
+                    file=f, path=storage_path, file_options={"content-type": "video/x-msvideo"}
                 )
             
             self.supabase.table("videos").insert({
@@ -104,18 +142,34 @@ class VideoRecorderService:
                 "storage_path": storage_path,
                 "url": storage_path 
             }).execute()
+            return True
+        except Exception:
+            return False
 
-            self.supabase.table("commands").update({"status": "EXECUTED"}).eq("id", cmd["id"]).execute()
-            print("Video uploaded.")
+    async def sync_cache(self):
+        files = [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith('.avi')]
+        for fpath in files:
+            fname = os.path.basename(fpath)
+            if await self.upload_file(fpath, fname):
+                print(f"Synced cached video: {fname}")
+                self.delete_file(fpath)
+            else:
+                break
 
-        except Exception as e:
-            print(f"Error uploading video: {e}")
-            self.supabase.table("commands").update({"status": "ERROR", "payload": {"error": str(e)}}).eq("id", cmd["id"]).execute()
-        
-        finally:
-            if os.path.exists(output_path):
-                try:
-                    os.remove(output_path)
-                except:
-                    pass
-            self.is_recording = False
+    def prune_cache(self):
+        files = sorted(
+            [os.path.join(self.cache_dir, f) for f in os.listdir(self.cache_dir) if f.endswith('.avi')],
+            key=os.path.getctime
+        )
+        if len(files) > self.max_cache_videos:
+            # Remove oldest
+            to_remove = files[:len(files) - self.max_cache_videos]
+            for f in to_remove:
+                self.delete_file(f)
+
+    def delete_file(self, path):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except:
+            pass
